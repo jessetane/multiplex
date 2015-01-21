@@ -226,3 +226,38 @@ test('chunks', function(t) {
     }
   }
 })
+
+test('destroyed sub-streams should not be recreated', function(t) {
+  t.plan(1)
+
+  var plex1 = multiplex()
+  var plex2 = multiplex(function(rs) {
+    t.pass('this should only happen once')
+    rs.pipe(through(function(c, enc, cb) {
+      cb(null, c)
+    }))
+
+    setTimeout(function() {
+      goslow = true
+      rs.destroy()
+    }, 100)
+  })
+
+  var goslow = false
+  var latency = through(function(c, enc, cb) {
+    setTimeout(function() {
+      cb(null, c)
+    }, (goslow ? 100 : 0))
+  })
+
+  plex1.pipe(plex2).pipe(latency).pipe(plex1)
+
+  var ws = plex1.createStream()
+  ws.on('close', function() {
+    clearInterval(interval)
+    t.end()
+  })
+  var interval = setInterval(function() {
+    ws.write('hello')
+  }, 20)
+})
