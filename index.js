@@ -11,30 +11,28 @@ var multiplex = function(opts, onstream) {
   if (typeof opts === 'function') return multiplex(null, opts)
   if (!opts) opts = {}
 
-  var local = []
-  var remote = []
+  var channels = 0
+  var streams = {}
   var encode = lpstream.encode()
   var decode = lpstream.decode()
   var dup = duplexify.obj(decode, encode)
 
-  var addChannel = function(list, index, name) {
+  var addChannel = function(channel, name) {
     var stream = duplexify.obj()
-    var channel = list === remote ? -(index+1) : index+1
-
     var readable = through.obj()
     var writable = through.obj(function(data, enc, cb) {
       if (typeof data === 'string') data = new Buffer(data)
-      encode.write(messages.Frame.encode({channel:channel, data:data, name:name}), cb)
+      encode.write(messages.Frame.encode({channel:-channel, data:data, name:name}), cb)
       name = null
     })
 
     var destroy = function(type, data) {
-      if (list[index] !== readable) return
-      encode.write(messages.Frame.encode({channel:channel, type:type, data:data, name:name}))
-      list[index] = null
+      if (streams[channel] !== readable) return
+      encode.write(messages.Frame.encode({channel:-channel, type:type, data:data, name:name}))
+      streams[channel] = null
     }
 
-    list[index] = readable
+    streams[channel] = readable
 
     stream.meta = name
     stream.setReadable(readable)
@@ -74,15 +72,13 @@ var multiplex = function(opts, onstream) {
     if (!frame) return dup.destroy(new Error('Invalid data'))
 
     var channel = frame.channel
-    var reply = channel < 0
-    var index = reply ? -channel-1 : channel-1
+    var reply = channel > 0
 
-    if (!reply && !remote[index] && onstream) {
-      onstream(addChannel(remote, index, frame.name), frame.name || index)
+    if (!reply && streams[channel] === undefined && onstream) {
+      onstream(addChannel(channel, frame.name), frame.name || channel)
     }
 
-    var list = reply ? local : remote
-    var stream = list[index]
+    var stream = streams[channel]
 
     if (!stream) return cb()
 
@@ -91,12 +87,12 @@ var multiplex = function(opts, onstream) {
       return stream.write(frame.data, cb)
 
       case TYPE.END:
-      list[index] = null
+      delete streams[channel]
       stream.end()
       return cb()
 
       case TYPE.ERROR:
-      list[index] = null
+      delete streams[channel]
       stream.emit('destroy', frame.data && new Error(frame.data.toString()))
       return cb()
     }
@@ -107,22 +103,22 @@ var multiplex = function(opts, onstream) {
   decode.pipe(through.obj(decoder))
 
   dup.on('close', function() {
-    local.concat(remote).forEach(function(readable) {
+    Object.keys(streams).forEach(function(key) {
+      var readable = streams[key]
       if (readable) readable.emit('destroy')
     })
   })
 
   dup.on('finish', function() {
-    local.concat(remote).forEach(function(readable) {
+    Object.keys(streams).forEach(function(key) {
+      var readable = streams[key]
       if (readable) readable.end()
     })
     encode.end()
   })
 
   dup.createStream = function(name) {
-    var index = local.indexOf(null)
-    if (index === -1) index = local.push(null)-1
-    return addChannel(local, index, name && ''+name)
+    return addChannel(++channels, name && ''+name)
   }
 
   return dup
